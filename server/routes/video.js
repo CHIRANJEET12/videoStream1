@@ -1,65 +1,67 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const Video = require("../models/video");
-const conn = require("../models/cons");
-const Grid = require('gridfs-stream');
-const { GridFsStorage } = require('multer-gridfs-storage');
 const multer = require('multer');
-const mongoose = require("mongoose");
-const path = require('path'); // Added path module
+const path = require('path');
+const fs = require('fs');
+const Video = require('../models/video'); // Your Video model
 
-let gfs;
-
-// Initialize GridFS
-conn.once('open', () => {
-    gfs = Grid(conn.db, mongoose.mongo);
-    gfs.collection('uploads');
-});
-
-// Storage configuration
-const storage = new GridFsStorage({
-    url: 'mongodb://localhost:27017/video',
-    file: (req, file) => { // Corrected parameter from res to file
-        return {
-            filename: 'file_' + Date.now() + path.extname(file.originalname),
-            bucketName: 'uploads',
-        };
+// Multer configuration
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/'); // Directory where files will be stored
+    },
+    filename: (req, file, cb) => {
+        cb(null, 'file_' + Date.now() + path.extname(file.originalname)); // Custom filename
     }
 });
 
 const upload = multer({ storage });
 
-router.get('/', (req, res) => {
-    res.send('Welcome to the homepage!');
-  });
+// Ensure uploads directory exists
+if (!fs.existsSync('uploads')) {
+    fs.mkdirSync('uploads');
+}
 
+// Route to handle video upload
 router.post('/upload', upload.single('videoFile'), async (req, res) => {
-    const { title } = req.body;
-    const newVideo = new Video({
-        title,
-        videoFile: req.file.filename,
-    });
-    await newVideo.save();
-    res.json({ message: 'Video uploaded successfully' });
+    try {
+        const { title } = req.body;
+        if (!req.file) {
+            return res.status(400).json({ message: 'No file uploaded' });
+        }
+
+        const newVideo = new Video({
+            title,
+            videoFile: req.file.filename,
+        });
+
+        await newVideo.save();
+        res.json({ message: 'Video uploaded successfully', video: newVideo });
+    } catch (error) {
+        res.status(500).json({ message: 'Error uploading video', error });
+    }
 });
 
+// Route to get all videos
 router.get('/videos', async (req, res) => {
-    const videos = await Video.find();
-    res.json(videos);
+    try {
+        const videos = await Video.find();
+        res.json(videos);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching videos', error });
+    }
 });
 
+// Route to stream video by filename
 router.get('/video/:filename', (req, res) => {
-    gfs.files.findOne({ filename: req.params.filename }, (err, file) => {
-        if (!file || file.length === 0) {
-            return res.status(404).json({ err: 'No such file exists' });
+    const filePath = path.join(__dirname, '../uploads', req.params.filename);
+    
+    fs.access(filePath, fs.constants.F_OK, (err) => {
+        if (err) {
+            return res.status(404).json({ message: 'No such file exists' });
         }
-
-        if (file.contentType === 'video/mp4' || file.contentType === 'video/webm') {
-            const readstream = gfs.createReadStream(file.filename);
-            readstream.pipe(res);
-        } else {
-            res.status(404).json({ err: 'Not a video' });
-        }
+        
+        res.sendFile(filePath);
     });
 });
 
